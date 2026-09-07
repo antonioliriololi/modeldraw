@@ -245,6 +245,40 @@
     font-size:11.5px;
     color:#555;
   }
+  .spacing-fields-row{
+    display:flex;
+    gap:10px;
+    margin-top:10px;
+  }
+  .spacing-field-col{
+    flex:1;
+    min-width:0;
+  }
+  .spacing-field-box{
+    background:#fff;
+    border:1px solid #e0e0da;
+    border-radius:6px;
+    padding:8px;
+    min-height:44px;
+  }
+  .spacing-field-chip{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    background:var(--panel-bg);
+    border:1px solid #e5e5e0;
+    border-radius:4px;
+    padding:4px 7px;
+    margin-bottom:5px;
+    font-size:11.5px;
+  }
+  .spacing-field-chip:last-child{margin-bottom:0;}
+  .spacing-field-amount{
+    text-align:center;
+    font-size:11px;
+    color:#777;
+    margin-top:4px;
+  }
 </style>
 </head>
 <body>
@@ -308,13 +342,32 @@
 
     <div class="section">
       <h2>4. Arreglar distancias</h2>
-      <p class="hint" style="margin-top:0;">Selecciona 2 a más variables y ajustar la distancia entre ellas de forma equitativa.</p>
+      <p class="hint" style="margin-top:0;">Marca el check de 1 o más variables y envíalas a Elementos A o a Elementos B. Usa Acortar/Alargar para acercar o alejar ese par como bloques. Cada vez que usas Acortar/Alargar, esa pareja queda fija en la lista de abajo — puedes vaciar los campos y armar otra pareja sin perder los ajustes ya aplicados.</p>
       <div id="spacingVarList"></div>
+
+      <div class="toolbar" style="justify-content:stretch; margin-top:10px;">
+        <button class="secondary" style="flex:1;" onclick="assignSpacingField('left')">→ Elementos A</button>
+        <button class="secondary" style="flex:1;" onclick="assignSpacingField('right')">Elementos B ←</button>
+      </div>
+      <button class="secondary" style="width:100%; margin-top:8px;" onclick="resetSpacingSelection()">Limpiar selección (checks)</button>
+
+      <div class="spacing-fields-row">
+        <div class="spacing-field-col">
+          <label class="field-label">Elementos A</label>
+          <div class="spacing-field-box" id="spacingFieldLeftBox"></div>
+        </div>
+        <div class="spacing-field-col">
+          <label class="field-label">Elementos B</label>
+          <div class="spacing-field-box" id="spacingFieldRightBox"></div>
+        </div>
+      </div>
+
       <div class="toolbar" style="justify-content:stretch; margin-top:10px;">
         <button class="secondary" style="flex:1;" onclick="applySpacing(-1)">◀ Acortar</button>
         <button class="secondary" style="flex:1;" onclick="applySpacing(1)">Alargar ▶</button>
       </div>
-      <button class="secondary" style="width:100%; margin-top:8px;" onclick="resetSpacingSelection()">Limpiar selección</button>
+      <button class="secondary" style="width:100%; margin-top:8px;" onclick="clearSpacingFields()">Vaciar campos A y B (para armar otra pareja)</button>
+
       <div id="spacingAdjList" style="margin-top:10px;"></div>
     </div>
 
@@ -354,10 +407,19 @@ let hypotheses = [
 let varCounter = 7;
 let hypCounter = 6;
 
-// "Arreglar distancias": variables actualmente marcadas para ajustar, y los
-// grupos de ajuste ya aplicados (cada uno con su propio nivel de acortar/alargar)
-let spacingSelection = new Set();
-let spacingAdjustments = []; // { ids:[...], amount: number }
+// "Arreglar distancias": el usuario marca variables con check y las envía a
+// Elementos A / Elementos B (campos de trabajo, "staging"). Cada vez que
+// presiona Acortar/Alargar, esa pareja (A,B) queda FIJADA como un ajuste
+// independiente en spacingAdjustments — así, aunque luego vacíe los campos
+// o limpie los checks para armar otra pareja, los ajustes ya aplicados
+// permanecen.
+let spacingSelection = new Set();      // checks marcados (temporal)
+let spacingFields = {                  // campos de trabajo (staging) A/B
+  left:  { ids: [] },
+  right: { ids: [] }
+};
+let spacingAdjustments = [];           // ajustes ya fijados: { idsA:[...], idsB:[...], amount }
+
 
 /* ============================================================
    RENDER DE LISTAS (panel izquierdo)
@@ -454,11 +516,15 @@ function removeVariable(id){
   variables = variables.filter(v => v.id !== id);
   // eliminar hipótesis que dependan de esta variable
   hypotheses = hypotheses.filter(h => h.from !== id && h.to !== id);
-  // limpiar referencias en la selección/ajustes de distancia
+  // limpiar referencias en la selección/campos de trabajo de distancia
   spacingSelection.delete(id);
+  spacingFields.left.ids = spacingFields.left.ids.filter(i => i !== id);
+  spacingFields.right.ids = spacingFields.right.ids.filter(i => i !== id);
+  // limpiar referencias en los ajustes ya fijados; si alguno se queda sin
+  // variables en A o en B, ese ajuste deja de tener sentido y se elimina
   spacingAdjustments = spacingAdjustments
-    .map(adj => ({ ...adj, ids: adj.ids.filter(i => i !== id) }))
-    .filter(adj => adj.ids.length >= 2);
+    .map(adj => ({ ...adj, idsA: adj.idsA.filter(i => i !== id), idsB: adj.idsB.filter(i => i !== id) }))
+    .filter(adj => adj.idsA.length > 0 && adj.idsB.length > 0);
   renderVarList();
   renderHypList();
   renderSpacingUI();
@@ -466,8 +532,10 @@ function removeVariable(id){
 }
 
 /* ============================================================
-   "ARREGLAR DISTANCIAS" — seleccionar 2 a 6 variables y acortar/alargar
-   la distancia entre ellas de forma equitativa (respecto a su centroide)
+   "ARREGLAR DISTANCIAS" — marcar con check 2 a más variables y enviarlas
+   al campo izquierdo o al campo derecho. Cada campo acorta/alarga la
+   distancia entre SUS propias variables de forma equitativa (respecto a
+   su centroide), de forma independiente del otro campo.
    ============================================================ */
 function renderSpacingUI(){
   const listBox = document.getElementById('spacingVarList');
@@ -483,24 +551,49 @@ function renderSpacingUI(){
     `).join('');
   }
 
-  const adjBox = document.getElementById('spacingAdjList');
-  if(spacingAdjustments.length === 0){
-    adjBox.innerHTML = '';
+  renderSpacingField('left');
+  renderSpacingField('right');
+  renderSpacingAdjList();
+}
+
+function renderSpacingField(field){
+  const box = document.getElementById(field === 'left' ? 'spacingFieldLeftBox' : 'spacingFieldRightBox');
+  const ids = spacingFields[field].ids;
+
+  if(ids.length === 0){
+    box.innerHTML = '<p class="empty-msg" style="padding:2px 0;">Vacío. Marca variables y usa el botón de arriba.</p>';
   } else {
-    adjBox.innerHTML = spacingAdjustments.map((adj, i) => {
-      const names = adj.ids.map(id => {
-        const v = variables.find(x => x.id === id);
-        return v ? v.name : '?';
-      }).join(', ');
-      const state = adj.amount > 0 ? `+${adj.amount}` : `${adj.amount}`;
+    box.innerHTML = ids.map(id => {
+      const v = variables.find(x => x.id === id);
+      const name = v ? v.name : '(eliminada)';
       return `
-        <div class="spacing-adj-item">
-          <span>${escapeHtml(names)} (${state})</span>
-          <button class="icon-btn" title="Quitar ajuste" onclick="removeSpacingAdjustment(${i})">✕</button>
+        <div class="spacing-field-chip">
+          <span>${escapeHtml(name)}</span>
+          <button class="icon-btn" title="Quitar del campo" onclick="removeFromSpacingField('${field}', ${id})">✕</button>
         </div>
       `;
     }).join('');
   }
+}
+
+function renderSpacingAdjList(){
+  const box = document.getElementById('spacingAdjList');
+  if(spacingAdjustments.length === 0){
+    box.innerHTML = '';
+    return;
+  }
+  const nameOf = id => { const v = variables.find(x => x.id === id); return v ? v.name : '(eliminada)'; };
+  box.innerHTML = spacingAdjustments.map((adj, i) => {
+    const namesA = adj.idsA.map(nameOf).join(', ');
+    const namesB = adj.idsB.map(nameOf).join(', ');
+    const state = adj.amount > 0 ? `+${adj.amount}` : `${adj.amount}`;
+    return `
+      <div class="spacing-adj-item">
+        <span>${escapeHtml(namesA)} ↔ ${escapeHtml(namesB)} (${state})</span>
+        <button class="icon-btn" title="Quitar este ajuste" onclick="removeSpacingAdjustment(${i})">✕</button>
+      </div>
+    `;
+  }).join('');
 }
 
 function toggleSpacingSelection(id){
@@ -513,49 +606,108 @@ function resetSpacingSelection(){
   renderSpacingUI();
 }
 
+// vacía los campos de trabajo A/B (staging) para poder armar una pareja
+// nueva; NO afecta a los ajustes ya fijados en spacingAdjustments
+function clearSpacingFields(){
+  spacingFields.left.ids = [];
+  spacingFields.right.ids = [];
+  renderSpacingUI();
+}
+
+// toma las variables actualmente marcadas con check y las envía al campo
+// de trabajo indicado (si ya estaban en el otro campo, se retiran de ahí primero)
+function assignSpacingField(field){
+  const ids = Array.from(spacingSelection);
+  if(ids.length === 0){
+    alert('Marca el check de al menos una variable antes de enviarla a un campo.');
+    return;
+  }
+  const other = field === 'left' ? 'right' : 'left';
+  ids.forEach(id => {
+    spacingFields[other].ids = spacingFields[other].ids.filter(i => i !== id);
+    if(!spacingFields[field].ids.includes(id)){
+      spacingFields[field].ids.push(id);
+    }
+  });
+  spacingSelection.clear();
+  renderSpacingUI();
+  drawFigure();
+}
+
+function removeFromSpacingField(field, id){
+  spacingFields[field].ids = spacingFields[field].ids.filter(i => i !== id);
+  renderSpacingUI();
+  drawFigure();
+}
+
 function removeSpacingAdjustment(i){
   spacingAdjustments.splice(i, 1);
   renderSpacingUI();
   drawFigure();
 }
 
-// aplica ± un paso de ajuste al grupo de variables actualmente seleccionado
+// compara dos arreglos de ids sin importar el orden
+function sameIdSet(a, b){
+  if(a.length !== b.length) return false;
+  const sa = [...a].sort((x,y) => x-y).join(',');
+  const sb = [...b].sort((x,y) => x-y).join(',');
+  return sa === sb;
+}
+
+// aplica ± un paso de ajuste a la pareja definida actualmente en los campos
+// de trabajo (Elementos A / Elementos B). Si ya existe un ajuste fijado para
+// esa misma pareja, se le suma el paso; si no, se crea uno nuevo — así queda
+// FIJO en la lista aunque luego se vacíen los campos o se limpien los checks.
 function applySpacing(direction){
-  const ids = Array.from(spacingSelection);
-  if(ids.length < 2){
-    alert('Selecciona al menos 2 variables para ajustar su distancia.');
+  const idsA = spacingFields.left.ids;
+  const idsB = spacingFields.right.ids;
+  if(idsA.length === 0 || idsB.length === 0){
+    alert('Necesitas al menos 1 variable en Elementos A y 1 en Elementos B para ajustar la distancia entre ambos.');
     return;
   }
-  const sortedIds = [...ids].sort((a,b) => a-b);
-  const key = sortedIds.join(',');
-  let entry = spacingAdjustments.find(a => [...a.ids].sort((x,y)=>x-y).join(',') === key);
+  let entry = spacingAdjustments.find(adj => sameIdSet(adj.idsA, idsA) && sameIdSet(adj.idsB, idsB));
   if(entry){
     entry.amount += direction;
   } else {
-    entry = { ids: sortedIds, amount: direction };
+    entry = { idsA: [...idsA], idsB: [...idsB], amount: direction };
     spacingAdjustments.push(entry);
   }
   renderSpacingUI();
   drawFigure();
 }
 
-// mueve cada variable del grupo radialmente hacia/desde el centroide del
-// grupo, en partes iguales — así la distancia entre TODAS las variables
-// seleccionadas crece o decrece de forma equitativa, sin importar su forma
-function applySpacingAdjustments(pos){
+// desplaza rígidamente el grupo A y el grupo B de CADA ajuste fijado, en
+// direcciones opuestas, a lo largo de la línea que une sus centroides — así
+// la distancia ENTRE los dos grupos de cada pareja crece o decrece, sin
+// alterar la posición relativa entre las variables de un mismo grupo
+function applySpacingAdjustments(pos, R){
   spacingAdjustments.forEach(adj => {
-    const pts = adj.ids.map(id => pos[id]).filter(Boolean);
-    if(pts.length < 2) return;
-    const cx = pts.reduce((s,p) => s + p.x, 0) / pts.length;
-    const cy = pts.reduce((s,p) => s + p.y, 0) / pts.length;
-    const scale = Math.max(0.35, 1 + adj.amount * 0.06);
-    adj.ids.forEach(id => {
-      const p = pos[id];
-      if(!p) return;
-      p.x = cx + (p.x - cx) * scale;
-      p.y = cy + (p.y - cy) * scale;
-    });
+    if(adj.amount === 0) return;
+    const idsA = adj.idsA.filter(id => pos[id]);
+    const idsB = adj.idsB.filter(id => pos[id]);
+    if(idsA.length === 0 || idsB.length === 0) return;
+
+    const centroid = ids => {
+      const pts = ids.map(id => pos[id]);
+      return {
+        x: pts.reduce((s,p) => s + p.x, 0) / pts.length,
+        y: pts.reduce((s,p) => s + p.y, 0) / pts.length
+      };
+    };
+    const cA = centroid(idsA);
+    const cB = centroid(idsB);
+    let dx = cB.x - cA.x, dy = cB.y - cA.y;
+    const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+    const ux = dx/dist, uy = dy/dist;
+
+    const shift = adj.amount * R * 0.5;
+    idsA.forEach(id => { pos[id].x -= ux*shift; pos[id].y -= uy*shift; });
+    idsB.forEach(id => { pos[id].x += ux*shift; pos[id].y += uy*shift; });
   });
+}
+
+function spacingHasAdjustments(){
+  return spacingAdjustments.some(adj => adj.amount !== 0);
 }
 
 // recalcula el ancho/alto del lienzo y desplaza todo a coordenadas
@@ -747,7 +899,7 @@ function computeLayout(R, orientation){
 /* ============================================================
    FLECHAS: siempre línea recta, un solo trazo, sin quiebres ni curvas.
    (Para separar variables que queden muy pegadas o cuyas líneas se crucen,
-   usa la sección "4. Arreglar distancias").
+   usa la sección "4. Arreglar distancias".)
    ============================================================ */
 function computeArrowRouting(pos, R, orientation){
   const routes = {};
@@ -800,8 +952,8 @@ function drawFigure(){
   const receiverIds = new Set(hypotheses.map(h => h.to));
 
   // aplicar ajustes manuales de "Arreglar distancias" (si el usuario definió alguno)
-  if(spacingAdjustments.length > 0){
-    applySpacingAdjustments(pos);
+  if(spacingHasAdjustments()){
+    applySpacingAdjustments(pos, R);
     const rebounded = reboundLayout(pos, R, R + 40);
     width = rebounded.width;
     height = rebounded.height;
